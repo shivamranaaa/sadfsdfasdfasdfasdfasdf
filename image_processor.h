@@ -34,4 +34,3 @@ void DrawFps(cv::Mat& mat, double time_inference_det, double time_inference_feat
 } // namespace ImageProcessor
 
 #endif // IMAGE_PROCESSOR_H_
-
