@@ -51,38 +51,67 @@ static cv::Scalar GetColorForId(int32_t id) {
     return color_list[id % kMaxNum];
 }
 
+cv::Rect prevBbox(-1, -1, -1, -1);
 std::string ImageProcessor::calculateDroneVelocityFormatted(const cv::Point& prevCentroid, const cv::Point& currCentroid, const cv::Rect& prevBbox, const cv::Rect& currBbox, int frameWidth, int frameHeight) {
     // Frame center
     cv::Point frameCenter(frameWidth / 2, frameHeight / 2);
 
+    // Dead zone around the center where no movement is needed
+    const int deadZoneX = frameWidth / 10; // 10% of frame width
+    const int deadZoneY = frameHeight / 10; // 10% of frame height
+
     // Displacement from the frame center
     int deltaX = currCentroid.x - frameCenter.x;
     int deltaY = currCentroid.y - frameCenter.y;
-    
-    //std::cout << deltaX << std::endl;
 
     // Maximum possible displacement from the center (diagonal / 2)
     double maxDistance = hypot(frameWidth / 2, frameHeight / 2);
 
-    // Calculate velocities
-    double rightwardVelocity = (1.0 * deltaX / maxDistance); // Normalize and scale to [0, 2] m/s
-    double forwardVelocity = -(1.0 * deltaY / maxDistance); // Normalize and scale to [0, 2] m/s, negative for forward
+    // Calculate rightward velocity with proportional control
+    double rightwardVelocity = 0.0;
+    if (std::abs(deltaX) > deadZoneX) {
+        rightwardVelocity = 0.25 * (deltaX / maxDistance); // Normalize and scale to [-2, 2]
+    }
+
+    // Calculate forward velocity based on bounding box size
+    double bboxArea = currBbox.height;
+    double forwardVelocity = 0.0;
+    
+    // Print bboxArea and prevBboxArea for debugging
+std::cout << "Current Bbox Area: " << bboxArea << std::endl;
+
+
+    if (bboxArea > 600) {
+        forwardVelocity = -0.10;  // Move backward if bbox is larger
+    } else if (bboxArea < 400) {
+        forwardVelocity = 0.10; // Move forward if bbox is smaller
+    }else{
+    	forwardVelocity = 0.0;
+    }
+
+    // Calculate vertical velocity inversely proportional to the distance from the frame center
+    double verticalVelocity = 0.0;
+    if (std::abs(deltaY) > deadZoneY) {
+        verticalVelocity = -0.25 * (deltaY / maxDistance); // Move down if above, up if below
+    }
 
     // Clamp velocities to the range [-2, 2]
-    rightwardVelocity = std::max(-1.0, std::min(1.0, rightwardVelocity));
-    forwardVelocity = std::max(-1.0, std::min(1.0, forwardVelocity));
+    rightwardVelocity = std::max(-0.25, std::min(0.25, rightwardVelocity));
+    forwardVelocity = std::max(-0.25, std::min(0.25, forwardVelocity));
+    verticalVelocity = std::max(-0.25, std::min(0.25, verticalVelocity));
 
     // Calculate yaw change based on rightward movement
-    double yawspeedDegS = 0.0; // Initialize to 0.0
-    if (deltaX > 60 || deltaX < -60) {
-        yawspeedDegS = std::max(-1.0, std::min(1.0, rightwardVelocity * 15)); // Scale and clamp yaw change
-    }
+    double yawspeedDegS = rightwardVelocity * 0.25; // Scale to [-45, 45]
+
+    // Clamp yawspeed to the range [-45, 45]
+    yawspeedDegS = std::max(-0.25, std::min(0.25, yawspeedDegS));
 
     // Format the output as specified
     std::ostringstream output;
-    output << forwardVelocity << " " << rightwardVelocity << " " << -forwardVelocity << " " << yawspeedDegS;  //forward or backward, right and left, up and down, yaw
+    output << forwardVelocity << " " << rightwardVelocity << " " << verticalVelocity << " " << yawspeedDegS;  // forward or backward, right and left, up and down, yaw
     return output.str();
 }
+
 
 
 void saveToTextFile(const std::string& data, const std::string& filename) {
@@ -182,7 +211,6 @@ int32_t ImageProcessor::Process(cv::Mat& mat, ImageProcessor::Result& result, do
     cv::Rect prevBbox, currBbox;
 
     for (const auto& bbox : det_result.bbox_list) {
-#ifdef USE_DEEPSORT
         FeatureEngine::Result feature_result;
         if (s_feature_engine->Process(mat, bbox, feature_result) == FeatureEngine::kRetOk) {
             feature_list.push_back(feature_result.feature);
@@ -192,7 +220,13 @@ int32_t ImageProcessor::Process(cv::Mat& mat, ImageProcessor::Result& result, do
         } else {
             feature_list.push_back(std::vector<float>());
         }
-#endif
+
+        // Update prevBbox with the current bbox after processing
+        prevCentroid = currCentroid;
+        prevBbox = currBbox;
+
+        currCentroid = cv::Point(bbox.x + bbox.w / 2, bbox.y + bbox.h / 2);
+        currBbox = cv::Rect(bbox.x, bbox.y, bbox.w, bbox.h);
     }
 
     s_tracker.Update(det_result.bbox_list, feature_list);
@@ -234,4 +268,3 @@ int32_t ImageProcessor::Process(cv::Mat& mat, ImageProcessor::Result& result, do
     result.time_post_process += time_post_process_feature;
     return 0;
 }
-
